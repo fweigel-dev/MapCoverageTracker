@@ -1,0 +1,41 @@
+{
+	"schemaVersion": 1,
+	"id": "mapcoveragetracker",
+	"version": "${version}",
+	"name": "Map Coverage Tracker",
+	"description": "Tracks 128x128 map coverage and visualizes it.",
+	"authors": [
+		"User"
+	],
+	"contact": {
+		"homepage": "",
+		"sources": ""
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/mapcoveragetracker/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"dev.fweigel.MapCoverageTracker"
+		],
+		"client": [
+			"dev.fweigel.MapCoverageTrackerClient"
+		]
+	},
+	"mixins": [
+		"mapcoveragetracker.mixins.json",
+		{
+			"config": "mapcoveragetracker.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.18.2",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"another-mod": "*"
+	}
+}

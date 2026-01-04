@@ -1,0 +1,12 @@
+{
+        "required": true,
+        "package": "dev.fweigel.mixin.client",
+        "compatibilityLevel": "JAVA_21",
+        "client": [
+                "MapDiscoveryMixin",
+                "MapItemIdOverlayMixin"
+        ],
+        "injectors": {
+                "defaultRequire": 1
+        }
+}
