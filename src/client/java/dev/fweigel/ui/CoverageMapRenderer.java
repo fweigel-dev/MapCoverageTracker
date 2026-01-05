@@ -57,8 +57,12 @@ public final class CoverageMapRenderer {
             return;
         }
 
+        int coverageTextHeight = font.lineHeight;
+        int legendSpace = drawLegend ? 24 : 0;
+        int reservedBottomSpace = coverageTextHeight + 8 + legendSpace;
+
         int availableWidth = panelRight - panelLeft - GRID_MARGIN;
-        int availableHeight = panelBottom - panelTop - GRID_MARGIN;
+        int availableHeight = panelBottom - panelTop - GRID_MARGIN - reservedBottomSpace;
         if (availableWidth <= 0 || availableHeight <= 0) {
             return;
         }
@@ -73,6 +77,8 @@ public final class CoverageMapRenderer {
         int startY = panelTop + (availableHeight - gridHeight) / 2;
 
         List<Component> hoveredTooltip = null;
+        int mappedCount = 0;
+        int totalAreas = columns * rows;
 
         for (int gx = 0; gx < columns; gx++) {
             for (int gz = 0; gz < rows; gz++) {
@@ -83,6 +89,10 @@ public final class CoverageMapRenderer {
                 boolean mapped = MapCoverageManager.isMapped(xStart, zStart);
                 Integer mapId = MapCoverageManager.getMapId(xStart, zStart);
                 int color = mapped ? 0xAA00CC66 : 0xAACC1111;
+
+                if (mapped) {
+                    mappedCount++;
+                }
 
                 int cellLeft = startX + gx * cellSize;
                 int cellTop = startY + gz * cellSize;
@@ -100,8 +110,16 @@ public final class CoverageMapRenderer {
 
         drawPlayerMarker(graphics, minecraft, startX, startY, cellSize, gxMin, gzMin, columns, rows);
 
+        double coveragePercent = totalAreas > 0 ? (mappedCount * 100.0) / totalAreas : 0.0;
+        String coverageText = String.format("Covered: %d/%d (%.2f%%)", mappedCount, totalAreas, coveragePercent);
+        int coverageTextWidth = font.width(coverageText);
+        int textX = panelLeft + 4;
+        int textY = panelBottom - legendSpace - coverageTextHeight - 4;
+        graphics.fill(textX - 2, textY - 2, textX + coverageTextWidth + 2, textY + coverageTextHeight + 2, 0xAA000000);
+        graphics.drawString(font, coverageText, textX, textY, 0xFFFFFFFF);
+
         if (drawLegend) {
-            graphics.drawString(font, MapCoverageManager.MAP_TILE_SIZE + "x" + MapCoverageManager.MAP_TILE_SIZE + " block tiles", startX, startY - 12, 0xFFFFFF);
+            graphics.drawString(font, MapCoverageManager.MAP_TILE_SIZE + "x" + MapCoverageManager.MAP_TILE_SIZE + " block tiles", panelLeft + 4, panelTop + 16, 0xFFFFFF);
             graphics.drawString(font, "Green = mapped", startX, panelBottom - 24, 0x00FF66);
             graphics.drawString(font, "Red = unmapped", startX, panelBottom - 12, 0xFF5555);
         }
