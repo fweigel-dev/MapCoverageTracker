@@ -17,6 +17,9 @@ public class MapCoverageManager {
     private static BlockPos targetEnd = null;
     private static boolean overlayEnabled = false;
     private static boolean isLoadingState = false;
+    private static long coverageVersion = 0;
+    private static long targetVersion = 0;
+    private static CoverageGrid cachedGrid = null;
 
     private MapCoverageManager() {
     }
@@ -25,6 +28,7 @@ public class MapCoverageManager {
         targetStart = start;
         targetEnd = end;
         overlayEnabled = true;
+        bumpTargetVersion();
         saveState();
     }
 
@@ -68,9 +72,13 @@ public class MapCoverageManager {
 
     public static void markMapped(int x, int z, Integer mapId) {
         long key = getGridKey(x, z);
-        mappedAreas.add(key);
+        boolean added = mappedAreas.add(key);
+        boolean mapIdAdded = false;
         if (mapId != null) {
-            mapIds.putIfAbsent(key, mapId);
+            mapIdAdded = mapIds.putIfAbsent(key, mapId) == null;
+        }
+        if (added || mapIdAdded) {
+            bumpCoverageVersion();
         }
         saveState();
     }
@@ -138,6 +146,10 @@ public class MapCoverageManager {
     private static long getGridKey(int x, int z) {
         int gx = toGridIndex(x);
         int gz = toGridIndex(z);
+        return getGridKeyFromGridIndex(gx, gz);
+    }
+
+    private static long getGridKeyFromGridIndex(int gx, int gz) {
         return (((long) gx) << 32) | (gz & 0xFFFFFFFFL);
     }
 
@@ -148,6 +160,8 @@ public class MapCoverageManager {
         mappedAreas.clear();
         mapIds.clear();
         MapCreationTracker.reset();
+        bumpCoverageVersion();
+        bumpTargetVersion();
 
         if (clearSavedData) {
             MapCoverageStorage.clearSavedData();
@@ -171,6 +185,8 @@ public class MapCoverageManager {
         }
 
         isLoadingState = false;
+        bumpCoverageVersion();
+        bumpTargetVersion();
     }
 
     public static MapCoverageState getStateSnapshot() {
@@ -181,6 +197,150 @@ public class MapCoverageManager {
     private static void saveState() {
         if (!isLoadingState) {
             MapCoverageStorage.save(getStateSnapshot());
+        }
+    }
+
+    private static void bumpCoverageVersion() {
+        coverageVersion++;
+        cachedGrid = null;
+    }
+
+    private static void bumpTargetVersion() {
+        targetVersion++;
+        cachedGrid = null;
+    }
+
+    public static CoverageGrid getCoverageGrid(BlockPos start, BlockPos end) {
+        if (start == null || end == null) {
+            return null;
+        }
+
+        int xMin = Math.min(start.getX(), end.getX());
+        int xMax = Math.max(start.getX(), end.getX());
+        int zMin = Math.min(start.getZ(), end.getZ());
+        int zMax = Math.max(start.getZ(), end.getZ());
+
+        int gxMin = toGridIndex(xMin);
+        int gxMax = toGridIndex(xMax);
+        int gzMin = toGridIndex(zMin);
+        int gzMax = toGridIndex(zMax);
+
+        int columns = gxMax - gxMin + 1;
+        int rows = gzMax - gzMin + 1;
+        if (columns <= 0 || rows <= 0) {
+            return null;
+        }
+
+        if (cachedGrid != null
+                && cachedGrid.matches(gxMin, gxMax, gzMin, gzMax, coverageVersion, targetVersion)) {
+            return cachedGrid;
+        }
+
+        boolean[] mapped = new boolean[columns * rows];
+        int[] mapIdLookup = new int[columns * rows];
+        int mappedCount = 0;
+
+        for (int gx = 0; gx < columns; gx++) {
+            for (int gz = 0; gz < rows; gz++) {
+                int worldGX = gxMin + gx;
+                int worldGZ = gzMin + gz;
+                long key = getGridKeyFromGridIndex(worldGX, worldGZ);
+                boolean isMapped = mappedAreas.contains(key);
+                int index = gz * columns + gx;
+                mapped[index] = isMapped;
+                Integer mapId = mapIds.get(key);
+                mapIdLookup[index] = mapId != null ? mapId : -1;
+                if (isMapped) {
+                    mappedCount++;
+                }
+            }
+        }
+
+        cachedGrid = new CoverageGrid(gxMin, gxMax, gzMin, gzMax, columns, rows, mappedCount, mapped, mapIdLookup,
+                coverageVersion, targetVersion);
+        return cachedGrid;
+    }
+
+    public static final class CoverageGrid {
+        private final int gxMin;
+        private final int gxMax;
+        private final int gzMin;
+        private final int gzMax;
+        private final int columns;
+        private final int rows;
+        private final int mappedCount;
+        private final boolean[] mapped;
+        private final int[] mapIdLookup;
+        private final long coverageVersion;
+        private final long targetVersion;
+
+        private CoverageGrid(int gxMin, int gxMax, int gzMin, int gzMax, int columns, int rows, int mappedCount,
+                             boolean[] mapped, int[] mapIdLookup, long coverageVersion, long targetVersion) {
+            this.gxMin = gxMin;
+            this.gxMax = gxMax;
+            this.gzMin = gzMin;
+            this.gzMax = gzMax;
+            this.columns = columns;
+            this.rows = rows;
+            this.mappedCount = mappedCount;
+            this.mapped = mapped;
+            this.mapIdLookup = mapIdLookup;
+            this.coverageVersion = coverageVersion;
+            this.targetVersion = targetVersion;
+        }
+
+        private boolean matches(int gxMin, int gxMax, int gzMin, int gzMax, long coverageVersion, long targetVersion) {
+            return this.gxMin == gxMin
+                    && this.gxMax == gxMax
+                    && this.gzMin == gzMin
+                    && this.gzMax == gzMax
+                    && this.coverageVersion == coverageVersion
+                    && this.targetVersion == targetVersion;
+        }
+
+        public int gxMin() {
+            return gxMin;
+        }
+
+        public int gzMin() {
+            return gzMin;
+        }
+
+        public int columns() {
+            return columns;
+        }
+
+        public int rows() {
+            return rows;
+        }
+
+        public int mappedCount() {
+            return mappedCount;
+        }
+
+        public int totalCount() {
+            return columns * rows;
+        }
+
+        public boolean isMappedAt(int worldGX, int worldGZ) {
+            int relativeGX = worldGX - gxMin;
+            int relativeGZ = worldGZ - gzMin;
+            if (relativeGX < 0 || relativeGX >= columns || relativeGZ < 0 || relativeGZ >= rows) {
+                return false;
+            }
+            int index = relativeGZ * columns + relativeGX;
+            return mapped[index];
+        }
+
+        public Integer getMapIdAt(int worldGX, int worldGZ) {
+            int relativeGX = worldGX - gxMin;
+            int relativeGZ = worldGZ - gzMin;
+            if (relativeGX < 0 || relativeGX >= columns || relativeGZ < 0 || relativeGZ >= rows) {
+                return null;
+            }
+            int index = relativeGZ * columns + relativeGX;
+            int mapId = mapIdLookup[index];
+            return mapId != -1 ? mapId : null;
         }
     }
 }

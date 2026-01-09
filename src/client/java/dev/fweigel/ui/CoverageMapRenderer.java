@@ -1,15 +1,20 @@
 package dev.fweigel.ui;
 
 import dev.fweigel.MapCoverageManager;
+import dev.fweigel.MapCoverageTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 
+import com.mojang.blaze3d.platform.NativeImage;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -17,6 +22,7 @@ import java.util.Optional;
 public final class CoverageMapRenderer {
     public static final int GRID_MARGIN = 16;
     public static final int GRID_MAX_CELL = 28;
+    private static final CachedGridTexture GRID_CACHE = new CachedGridTexture();
 
     private CoverageMapRenderer() {
     }
@@ -41,21 +47,12 @@ public final class CoverageMapRenderer {
             return;
         }
 
-        int xMin = Math.min(start.getX(), end.getX());
-        int xMax = Math.max(start.getX(), end.getX());
-        int zMin = Math.min(start.getZ(), end.getZ());
-        int zMax = Math.max(start.getZ(), end.getZ());
-
-        int gxMin = MapCoverageManager.toGridIndex(xMin);
-        int gxMax = MapCoverageManager.toGridIndex(xMax);
-        int gzMin = MapCoverageManager.toGridIndex(zMin);
-        int gzMax = MapCoverageManager.toGridIndex(zMax);
-
-        int columns = gxMax - gxMin + 1;
-        int rows = gzMax - gzMin + 1;
-        if (columns <= 0 || rows <= 0) {
+        MapCoverageManager.CoverageGrid grid = MapCoverageManager.getCoverageGrid(start, end);
+        if (grid == null) {
             return;
         }
+        int columns = grid.columns();
+        int rows = grid.rows();
 
         int coverageTextHeight = font.lineHeight;
         int legendSpace = drawLegend ? 24 : 0;
@@ -77,38 +74,34 @@ public final class CoverageMapRenderer {
         int startY = panelTop + (availableHeight - gridHeight) / 2;
 
         List<Component> hoveredTooltip = null;
-        int mappedCount = 0;
-        int totalAreas = columns * rows;
+        int mappedCount = grid.mappedCount();
+        int totalAreas = grid.totalCount();
 
-        for (int gx = 0; gx < columns; gx++) {
-            for (int gz = 0; gz < rows; gz++) {
-                int worldGX = gxMin + gx;
-                int worldGZ = gzMin + gz;
+        GRID_CACHE.ensureUpToDate(minecraft, grid, cellSize);
+        if (GRID_CACHE.hasTexture()) {
+            graphics.blit(RenderPipelines.GUI_TEXTURED, GRID_CACHE.textureId, startX, startY, 0, 0,
+                    GRID_CACHE.width, GRID_CACHE.height, GRID_CACHE.width, GRID_CACHE.height);
+        }
+
+        if (enableTooltip
+                && mouseX >= startX
+                && mouseX < startX + gridWidth
+                && mouseY >= startY
+                && mouseY < startY + gridHeight) {
+            int gx = (mouseX - startX) / cellSize;
+            int gz = (mouseY - startY) / cellSize;
+            if (gx >= 0 && gx < columns && gz >= 0 && gz < rows) {
+                int worldGX = grid.gxMin() + gx;
+                int worldGZ = grid.gzMin() + gz;
                 int xStart = MapCoverageManager.gridIndexToStart(worldGX);
                 int zStart = MapCoverageManager.gridIndexToStart(worldGZ);
-                boolean mapped = MapCoverageManager.isMapped(xStart, zStart);
-                Integer mapId = MapCoverageManager.getMapId(xStart, zStart);
-                int color = mapped ? 0xAA00CC66 : 0xAACC1111;
-
-                if (mapped) {
-                    mappedCount++;
-                }
-
-                int cellLeft = startX + gx * cellSize;
-                int cellTop = startY + gz * cellSize;
-                int cellRight = cellLeft + cellSize;
-                int cellBottom = cellTop + cellSize;
-
-                graphics.fill(cellLeft, cellTop, cellRight, cellBottom, color);
-                graphics.renderOutline(cellLeft, cellTop, cellSize, cellSize, 0x66000000);
-
-                if (enableTooltip && mouseX >= cellLeft && mouseX < cellRight && mouseY >= cellTop && mouseY < cellBottom) {
-                    hoveredTooltip = buildCellTooltip(xStart, zStart, mapped, mapId);
-                }
+                boolean mapped = grid.isMappedAt(worldGX, worldGZ);
+                Integer mapId = grid.getMapIdAt(worldGX, worldGZ);
+                hoveredTooltip = buildCellTooltip(xStart, zStart, mapped, mapId);
             }
         }
 
-        drawPlayerMarker(graphics, minecraft, startX, startY, cellSize, gxMin, gzMin, columns, rows);
+        drawPlayerMarker(graphics, minecraft, startX, startY, cellSize, grid.gxMin(), grid.gzMin(), columns, rows);
 
         double coveragePercent = totalAreas > 0 ? (mappedCount * 100.0) / totalAreas : 0.0;
         String coverageText = String.format("Covered: %d/%d (%.2f%%)", mappedCount, totalAreas, coveragePercent);
@@ -177,5 +170,97 @@ public final class CoverageMapRenderer {
             tooltip.add(Component.literal("Not mapped"));
         }
         return tooltip;
+    }
+
+    private static final class CachedGridTexture {
+        private static final int COLOR_MAPPED = 0xAA00CC66;
+        private static final int COLOR_UNMAPPED = 0xAACC1111;
+        private static final int COLOR_OUTLINE = 0x66000000;
+
+        private Identifier textureId;
+        private DynamicTexture texture;
+        private int width;
+        private int height;
+        private int cellSize;
+        private MapCoverageManager.CoverageGrid grid;
+
+        private boolean needsRebuild(MapCoverageManager.CoverageGrid grid, int cellSize) {
+            return this.grid != grid || this.cellSize != cellSize;
+        }
+
+        private boolean needsTextureResize(MapCoverageManager.CoverageGrid grid, int cellSize) {
+            int nextWidth = grid.columns() * cellSize;
+            int nextHeight = grid.rows() * cellSize;
+            return nextWidth != width || nextHeight != height;
+        }
+
+        private boolean hasTexture() {
+            return texture != null && textureId != null && width > 0 && height > 0;
+        }
+
+        private void ensureUpToDate(Minecraft minecraft, MapCoverageManager.CoverageGrid grid, int cellSize) {
+            if (minecraft == null || grid == null) {
+                return;
+            }
+            boolean rebuild = needsRebuild(grid, cellSize);
+            boolean resize = needsTextureResize(grid, cellSize);
+            if (!rebuild && !resize) {
+                return;
+            }
+
+            this.grid = grid;
+            this.cellSize = cellSize;
+            this.width = grid.columns() * cellSize;
+            this.height = grid.rows() * cellSize;
+
+            NativeImage image = new NativeImage(width, height, false);
+            fillImage(image, grid, cellSize);
+
+            if (texture == null || resize) {
+                if (texture != null) {
+                    texture.close();
+                }
+                texture = new DynamicTexture(() -> "coverage_grid", image);
+                textureId = Identifier.fromNamespaceAndPath(MapCoverageTracker.MOD_ID, "coverage_grid");
+                minecraft.getTextureManager().register(textureId, texture);
+            } else {
+                texture.setPixels(image);
+            }
+            texture.upload();
+        }
+
+        private void fillImage(NativeImage image, MapCoverageManager.CoverageGrid grid, int cellSize) {
+            int mappedColor = toAbgr(COLOR_MAPPED);
+            int unmappedColor = toAbgr(COLOR_UNMAPPED);
+            int outlineColor = toAbgr(COLOR_OUTLINE);
+
+            for (int gz = 0; gz < grid.rows(); gz++) {
+                for (int gx = 0; gx < grid.columns(); gx++) {
+                    boolean mapped = grid.isMappedAt(grid.gxMin() + gx, grid.gzMin() + gz);
+                    int fillColor = mapped ? mappedColor : unmappedColor;
+                    int pixelStartX = gx * cellSize;
+                    int pixelStartY = gz * cellSize;
+
+                    for (int y = 0; y < cellSize; y++) {
+                        int pixelY = pixelStartY + y;
+                        for (int x = 0; x < cellSize; x++) {
+                            int pixelX = pixelStartX + x;
+                            boolean isOutline = cellSize > 1
+                                    && (x == 0 || y == 0 || x == cellSize - 1 || y == cellSize - 1);
+                            int color = isOutline ? outlineColor : fillColor;
+                            image.setPixelABGR(pixelX, pixelY, color);
+                        }
+                    }
+                }
+            }
+        }
+
+        private static int toAbgr(int argb) {
+            int a = (argb >> 24) & 0xFF;
+            int r = (argb >> 16) & 0xFF;
+            int g = (argb >> 8) & 0xFF;
+            int b = argb & 0xFF;
+            return (a << 24) | (b << 16) | (g << 8) | r;
+        }
     }
 }
